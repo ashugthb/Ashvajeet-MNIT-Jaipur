@@ -89,7 +89,7 @@ except Exception as e:
     logger.error(f"❌ Failed to initialize Gemini Client: {e}")
     client = None
 
-# --- PYDANTIC MODELS ---
+# --- PYDANTIC MODELS (EXACT FORMAT FROM PROBLEM STATEMENT) ---
 class TokenUsage(BaseModel):
     total_tokens: int
     input_tokens: int
@@ -109,10 +109,10 @@ class PageItem(BaseModel):
 class ExtractedData(BaseModel):
     pagewise_line_items: List[PageItem]
     total_item_count: int
+    token_usage: TokenUsage  # MOVED INSIDE data as per problem statement
 
 class ApiResponse(BaseModel):
     is_success: bool
-    token_usage: Optional[TokenUsage] = None
     data: Optional[ExtractedData] = None
     message: Optional[str] = None
 
@@ -509,14 +509,14 @@ async def process_bill_extraction(document_url: str) -> ApiResponse:
             logger.info(f"🏁 Done. {total_items_count} items extracted")
             return ApiResponse(
                 is_success=True,
-                token_usage=TokenUsage(
-                    total_tokens=total_tokens,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens
-                ),
                 data=ExtractedData(
                     pagewise_line_items=pagewise_items,
-                    total_item_count=total_items_count
+                    total_item_count=total_items_count,
+                    token_usage=TokenUsage(
+                        total_tokens=total_tokens,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens
+                    )
                 )
             )
 
