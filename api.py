@@ -176,10 +176,10 @@ def load_page_image(file_path: str, page_index: int) -> Optional[PIL.Image.Image
             
         page = doc.load_page(page_index)
         
-        # Calculate zoom for max 800px dimension
+        # Calculate zoom for max 1024px dimension (higher = better accuracy)
         rect = page.rect
         max_dim = max(rect.width, rect.height)
-        zoom = min(1.0, 800 / max_dim) if max_dim > 800 else 1.0
+        zoom = min(1.0, 1024 / max_dim) if max_dim > 1024 else 1.0
         
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat, alpha=False)
@@ -204,7 +204,7 @@ def load_page_image(file_path: str, page_index: int) -> Optional[PIL.Image.Image
         if page_index == 0:
             try:
                 img = PIL.Image.open(file_path).convert("RGB")
-                img.thumbnail((800, 800))
+                img.thumbnail((1024, 1024))  # Higher res for accuracy
                 return img
             except:
                 return None
@@ -336,13 +336,24 @@ def process_page_chunk_sync(chunk_idx: int, page_indices: List[int], temp_file_p
     if not chunk_images:
         return {"items": [], "tokens": (0,0,0), "success": False}
 
-    # 2. Batch Schema
+    # 2. Batch Schema with ACCURACY-FOCUSED prompt
     BATCH_SCHEMA = {"type": "ARRAY", "items": RECEIPT_SCHEMA}
-    BATCH_PROMPT = f"Extract line items from these {len(chunk_images)} bill pages. Return array of objects, one per page."
+    BATCH_PROMPT = f"""You are extracting line items from {len(chunk_images)} medical bill pages.
 
-    # 3. INSTANT FAILOVER - Zero delay on error
+RULES:
+1. Extract EVERY line item row - do NOT skip or merge rows
+2. item_name: exact text from description column
+3. total_price: use NET amount (not gross). If only one amount shown, use that.
+4. quantity: default 1.0 if not shown
+5. item_rate: unit price. If not shown, use total_price.
+6. IGNORE: headers, subtotals, grand totals, payment rows
+7. page_type: "Bill Detail" for itemized, "Final Bill" for summary, "Pharmacy" for medicines
+
+Return JSON array with one object per page, in order."""
+
+    # 3. INSTANT FAILOVER - gemini-2.5-flash is more reliable (2.0 always 429)
     response = None
-    MODELS = ["gemini-2.0-flash", "gemini-2.5-flash"]
+    MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]  # 2.5 first - more reliable
     
     for model_name in MODELS:
         try:
