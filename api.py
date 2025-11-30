@@ -20,14 +20,14 @@ from dotenv import load_dotenv
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 
-# --- PERFORMANCE: Connection pooling for downloads ---
+# Connection pooling for faster downloads
 HTTP_SESSION = requests.Session()
-HTTP_SESSION.headers.update({'User-Agent': 'HackRx-BillExtractor/1.0'})
+HTTP_SESSION.headers.update({'User-Agent': 'BillExtractor/1.0'})
 
 # Load environment variables
 load_dotenv()
 
-# --- LOGGING CONFIGURATION ---
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -37,25 +37,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BillExtractorAPI")
 
-app = FastAPI(title="HackRx Bill Extraction API", description="API for extracting line items from bills")
+app = FastAPI(title="Bill Extraction API", description="API for extracting line items from medical bills")
 
-# --- GLOBAL CONCURRENCY LOCK ---
-# CRITICAL FOR RENDER FREE TIER (512MB RAM)
-# This ensures that only ONE request is processed at a time.
-# If two judges test simultaneously, the second request waits.
-# Without this, 2 requests x 150MB = 300MB + Overhead > 512MB -> CRASH.
+# Global lock to ensure sequential processing (prevents memory overflow)
 request_lock = asyncio.Lock()
 
-# --- CORS MIDDLEWARE (CRITICAL FOR FRONTEND EVALUATION) ---
+# CORS middleware - allow all origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow ALL origins (Judges might test from localhost or their own dashboard)
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- MIDDLEWARE FOR LOGGING ---
+# Request logging middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start_time = time.time()
@@ -70,12 +66,12 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/")
 def root():
-    logger.info("💓 Health Check / Root Access Detected")
-    return {"status": "online", "message": "HackRx Bill Extractor is Ready"}
+    logger.info("💓 Health check")
+    return {"status": "online", "message": "Bill Extractor API is Ready"}
 
-# --- CONFIGURATION ---
+# Configuration
 API_KEY_NAME = "X-API-Key"
-API_KEY_VALUE = os.getenv("SERVICE_API_KEY", "hackrx-secret-key") 
+API_KEY_VALUE = os.getenv("SERVICE_API_KEY", "secret-key") 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 if not GOOGLE_API_KEY:
@@ -109,10 +105,10 @@ class PageItem(BaseModel):
 class ExtractedData(BaseModel):
     pagewise_line_items: List[PageItem]
     total_item_count: int
-    token_usage: TokenUsage  # MOVED INSIDE data as per problem statement
 
 class ApiResponse(BaseModel):
     is_success: bool
+    token_usage: Optional[TokenUsage] = None
     data: Optional[ExtractedData] = None
     message: Optional[str] = None
 
@@ -149,9 +145,8 @@ async def get_document_url(request: Request, body: ApiRequest) -> str:
 
 import psutil
 
-# --- MEMORY MONITORING ---
 def log_memory(stage: str):
-    """Logs current memory usage to track leaks/spikes."""
+    """Log current memory usage for monitoring."""
     try:
         process = psutil.Process(os.getpid())
         mem_mb = process.memory_info().rss / 1024 / 1024
@@ -159,10 +154,9 @@ def log_memory(stage: str):
     except:
         pass
 
-# --- VISION PREPROCESSING ---
 def load_page_image(file_path: str, page_index: int) -> Optional[PIL.Image.Image]:
     """
-    Load a single page as PIL Image. BULLETPROOF memory management.
+    Load a single page as PIL Image with memory management.
     """
     doc = None
     pix = None
@@ -217,7 +211,7 @@ def load_page_image(file_path: str, page_index: int) -> Optional[PIL.Image.Image
             except: pass
         return None
 
-# --- PROMPT & SCHEMA ---
+# Extraction schema for structured output
 RECEIPT_SCHEMA = {
     "type": "OBJECT",
     "properties": {
@@ -267,16 +261,13 @@ You are analyzing a financial document page. Extract **only the distinct line it
 }
 """
 
-# --- HELPER FUNCTIONS ---
+# Helper functions
 async def verify_api_key(x_api_key: str = Header(None)):
-    # For hackathon, we can be lenient or strict. 
-    if API_KEY_VALUE and x_api_key != API_KEY_VALUE:
-        # raise HTTPException(status_code=401, detail="Invalid API Key")
-        pass # Disabled for submission compatibility
+    # API key verification (currently disabled)
     return x_api_key
 
 def download_file(url: str) -> str:
-    """OPTIMIZED: Uses connection pooling, larger chunks, shorter timeout."""
+    """Download file using connection pooling."""
     try:
         logger.info(f"⬇️ Downloading: {url}")
         # Use pooled session + shorter timeout (fail fast)
@@ -313,7 +304,7 @@ def clean_json_text(text):
 
 def process_page_chunk_sync(chunk_idx: int, page_indices: List[int], temp_file_path: str) -> dict:
     """
-    Process a chunk of pages. BULLETPROOF memory management.
+    Process a chunk of pages with memory management.
     """
     log_memory(f"Start Chunk {chunk_idx}")
     logger.info(f"🚀 Chunk {chunk_idx}: Pages {page_indices}")
@@ -336,7 +327,7 @@ def process_page_chunk_sync(chunk_idx: int, page_indices: List[int], temp_file_p
     if not chunk_images:
         return {"items": [], "tokens": (0,0,0), "success": False}
 
-    # 2. Batch Schema with ACCURACY-FOCUSED prompt
+    # Batch schema and prompt for multi-page extraction
     BATCH_SCHEMA = {"type": "ARRAY", "items": RECEIPT_SCHEMA}
     BATCH_PROMPT = f"""You are extracting line items from {len(chunk_images)} medical bill pages.
 
@@ -351,9 +342,9 @@ RULES:
 
 Return JSON array with one object per page, in order."""
 
-    # 3. INSTANT FAILOVER - gemini-2.5-flash is more reliable (2.0 always 429)
+    # Model failover - try primary first, then backup
     response = None
-    MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]  # 2.5 first - more reliable
+    MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]
     
     for model_name in MODELS:
         try:
@@ -373,7 +364,7 @@ Return JSON array with one object per page, in order."""
             logger.warning(f"⚡ {model_name} failed → next: {str(e)[:40]}")
             continue
     
-    # 4. CRITICAL: Close ALL PIL images explicitly
+    # Close all PIL images to free memory
     for img in chunk_images:
         try:
             img.close()
@@ -387,7 +378,7 @@ Return JSON array with one object per page, in order."""
     if not response:
         return {"items": [], "tokens": (0,0,0), "success": False}
 
-    # 5. Parse Response
+    # Parse response and extract tokens
     tokens = (0, 0, 0)
     if response.usage_metadata:
         tokens = (
@@ -437,17 +428,17 @@ Return JSON array with one object per page, in order."""
     
     return {"items": extracted_pages, "tokens": tokens, "success": True}
 
-# --- ENDPOINTS ---
+# Main extraction endpoints
 
 async def process_bill_extraction(document_url: str) -> ApiResponse:
-    """Core logic for extracting bill data, shared by GET and POST endpoints."""
+    """Core logic for extracting bill data from a document URL."""
     
-    # ACQUIRE LOCK TO PREVENT OOM FROM CONCURRENT REQUESTS
+    # Acquire lock to prevent concurrent processing (memory safety)
     if request_lock.locked():
         logger.warning("⚠️ Another request is currently processing. This request is queued...")
     
     async with request_lock:
-        logger.info(f"🚀 SUBMISSION REVIEW DETECTED: Processing document {document_url}")
+        logger.info(f"🚀 Processing document: {document_url}")
         
         if not client:
             logger.critical("LLM Client is not initialized.")
@@ -509,14 +500,14 @@ async def process_bill_extraction(document_url: str) -> ApiResponse:
             logger.info(f"🏁 Done. {total_items_count} items extracted")
             return ApiResponse(
                 is_success=True,
+                token_usage=TokenUsage(
+                    total_tokens=total_tokens,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens
+                ),
                 data=ExtractedData(
                     pagewise_line_items=pagewise_items,
-                    total_item_count=total_items_count,
-                    token_usage=TokenUsage(
-                        total_tokens=total_tokens,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens
-                    )
+                    total_item_count=total_items_count
                 )
             )
 
@@ -549,45 +540,37 @@ async def extract_bill_data_get(document: Optional[str] = None, url: Optional[st
          raise HTTPException(status_code=400, detail="Missing 'document' or 'url' query parameter.")
     return await process_bill_extraction(target_url)
 
-# --- BULLETPROOF ENDPOINTS (Handle URL variations) ---
+# Additional endpoint aliases for compatibility
 
 @app.post("/", response_model=ApiResponse)
 async def extract_bill_data_root(request: Request, body: ApiRequest):
-    """
-    Handle cases where the evaluator posts directly to the root URL.
-    """
-    logger.info("🛡️ Bulletproof Hit: POST / (Root)")
+    """Handle POST to root URL."""
+    logger.info("🛡️ POST /")
     url = await get_document_url(request, body)
     return await process_bill_extraction(url)
 
 @app.post("/extract-bill-data/", response_model=ApiResponse)
 async def extract_bill_data_trailing_slash(request: Request, body: ApiRequest):
-    """
-    Handle cases with trailing slash.
-    """
-    logger.info("🛡️ Bulletproof Hit: POST /extract-bill-data/")
+    """Handle trailing slash variant."""
+    logger.info("🛡️ POST /extract-bill-data/")
     url = await get_document_url(request, body)
     return await process_bill_extraction(url)
 
 @app.post("/extract-bill-data/extract-bill-data", response_model=ApiResponse)
 async def extract_bill_data_double(request: Request, body: ApiRequest):
-    """
-    Handle cases where the evaluator appends the path to an already full URL.
-    """
-    logger.info("🛡️ Bulletproof Hit: POST /extract-bill-data/extract-bill-data")
+    """Handle double path variant."""
+    logger.info("🛡️ POST /extract-bill-data/extract-bill-data")
     url = await get_document_url(request, body)
     return await process_bill_extraction(url)
 
 @app.post("/api/v1/hackrx/run", response_model=ApiResponse)
-async def extract_bill_data_placeholder(request: Request, body: ApiRequest):
-    """
-    Handle the placeholder URL path shown in the screenshot, just in case.
-    """
-    logger.info("🛡️ Bulletproof Hit: POST /api/v1/hackrx/run")
+async def extract_bill_data_api(request: Request, body: ApiRequest):
+    """Handle API path variant."""
+    logger.info("🛡️ POST /api/v1/hackrx/run")
     url = await get_document_url(request, body)
     return await process_bill_extraction(url)
 
-# --- GLOBAL ERROR HANDLER (Prevent any uncaught 500s) ---
+# Global error handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"🔥 UNHANDLED EXCEPTION: {type(exc).__name__}: {exc}")
@@ -598,13 +581,12 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    logger.info(f"🚀 HACKATHON MODE: Starting on Port {port}")
-    # OPTIMIZED UVICORN CONFIG FOR COMPETITION
+    logger.info(f"🚀 Starting server on port {port}")
     uvicorn.run(
         app, 
         host="0.0.0.0", 
         port=port,
-        timeout_keep_alive=300,  # 5 min keep-alive for long PDFs
-        limit_concurrency=1,     # Enforce single request (matches our lock)
-        backlog=10,              # Queue up to 10 waiting requests
+        timeout_keep_alive=300,
+        limit_concurrency=1,
+        backlog=10,
     )
