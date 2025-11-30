@@ -1,0 +1,9 @@
+# MINIMAL DEPENDENCIES - Faster deploy, less memory
+pymupdf
+fastapi
+uvicorn
+requests
+google-genai
+pillow
+python-dotenv
+psutil
