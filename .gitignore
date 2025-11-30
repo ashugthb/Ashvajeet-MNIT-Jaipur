@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.pyc
+.env
+venv/
+
+# Data files
+train_data/
+processed_data/
+*.pdf
+*.png
+*.jpg
+*.json
+*.txt
+*.csv
+image_b64.txt
+
+# Test/Debug files
+test_*.py
+debug_*.py
+stress_*.py
+verify_*.py
+upload_*.py
+*_test.py
+ablation*.py
+benchmark*.py
+analyze*.py
+batch_process.py
+generate_*.py
+patch_*.py
+colab_*.py
+kaggle_*.py
+
+# Notebooks
+*.ipynb
+
+# Guides (keep README only)
+*_GUIDE.md
+*_guide.md
+
+# Results/Reports
+*_results/
+*_report*
+hosted_response*
+response_*
+
+# Other
+main.py
+preprocess.py
